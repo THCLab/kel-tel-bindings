@@ -11,7 +11,7 @@ use keri::{
     event_message::parse::{signed_event_stream, Deserialized},
     event_message::SignedEventMessage,
     prefix::AttachedSignaturePrefix,
-    prefix::IdentifierPrefix,
+    prefix::{IdentifierPrefix, SelfAddressingPrefix},
     processor::EventProcessor,
     signer::KeyManager,
     state::IdentifierState,
@@ -240,9 +240,25 @@ impl<'d> KERL<'d> {
             .map_err(|e| Error::KeriError(e))
     }
 
-    pub fn get_state_for_seal(&self, seal: &EventSeal) -> Result<Option<IdentifierState>, Error> {
-        self.processor
-            .compute_state_at_sn(&seal.prefix, seal.sn)
-            .map_err(|e| Error::KeriError(e))
+    pub fn get_state_for_seal(
+        &self,
+        prefix: &IdentifierPrefix,
+        sn: u64,
+        digest: &SelfAddressingPrefix,
+    ) -> Result<Option<IdentifierState>, Error> {
+        match self
+            .processor
+            .compute_state_at_sn(&prefix, sn)
+            .map_err(|e| Error::KeriError(e))?
+        {
+            Some(s) => {
+                if !digest.verify_binding(&s.last) {
+                    Err(Error::Generic("Last event digests doesn't match".into()))
+                } else {
+                    Ok(Some(s))
+                }
+            }
+            None => Ok(None),
+        }
     }
 }

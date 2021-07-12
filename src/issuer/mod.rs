@@ -1,15 +1,16 @@
 use crate::{error::Error, kerl::KERL};
 use keri::{
-    database::{sled::SledEventDatabase},
-    derivation::self_addressing::SelfAddressing,
+    database::sled::SledEventDatabase,
+    derivation::{self_addressing::SelfAddressing, self_signing::SelfSigning},
     event::sections::seal::{EventSeal, Seal},
-    prefix::{IdentifierPrefix},
+    prefix::{BasicPrefix, IdentifierPrefix, SelfAddressingPrefix},
     signer::KeyManager,
 };
 use teliox::{
     database::EventDatabase,
     event::{manager_event::Config, verifiable_event::VerifiableEvent, Event},
     seal::EventSourceSeal,
+    state::vc_state::TelState,
     tel::Tel,
 };
 
@@ -35,13 +36,29 @@ impl<'d, 't> Issuer<'d, 't> {
         }
     }
 
-    pub fn incept_tel<K: KeyManager>(&mut self, km: &K) -> Result<(), Error> {
-        let vcp = self.tel.make_inception_event(
-            self.prefix.clone(),
-            vec![Config::NoBackers],
-            0,
-            vec![],
-        )?;
+    pub fn init<K: KeyManager>(
+        &mut self,
+        km: &K,
+        backers: Option<Vec<IdentifierPrefix>>,
+        backer_threshold: u64,
+    ) -> Result<(), Error> {
+        self.incept_kel(km)?;
+        self.incept_tel(km, backers, backer_threshold)
+    }
+
+    fn incept_tel<K: KeyManager>(
+        &mut self,
+        km: &K,
+        backers: Option<Vec<IdentifierPrefix>>,
+        backer_threshold: u64,
+    ) -> Result<(), Error> {
+        let (config, b) = match backers {
+            Some(backers) => (vec![], backers),
+            None => (vec![Config::NoBackers], vec![]),
+        };
+        let vcp =
+            self.tel
+                .make_inception_event(self.prefix.clone(), config, backer_threshold, b)?;
 
         let management_tel_prefix = vcp.clone().prefix;
 
@@ -67,7 +84,7 @@ impl<'d, 't> Issuer<'d, 't> {
         Ok(())
     }
 
-    pub fn incept_kel<K: KeyManager>(&mut self, km: &K) -> Result<(), Error> {
+    fn incept_kel<K: KeyManager>(&mut self, km: &K) -> Result<(), Error> {
         self.kerl.incept(km)?;
         self.prefix = self.kerl.get_state().unwrap().unwrap().prefix;
         Ok(())
@@ -79,7 +96,7 @@ impl<'d, 't> Issuer<'d, 't> {
         br: &[IdentifierPrefix],
         km: &K,
     ) -> Result<(), Error> {
-        let rcp = self.tel.make_rotation_event(ba.to_vec(), br.to_vec())?;
+        let rcp = self.tel.make_rotation_event(ba, br)?;
 
         // create rcp seal which will be inserted into issuer kel (ixn event)
         let rcp_seal = Seal::Event(EventSeal {
@@ -102,11 +119,8 @@ impl<'d, 't> Issuer<'d, 't> {
         Ok(())
     }
 
-    pub fn issue<K: KeyManager>(&mut self, vc: &str, km: &K) -> Result<(), Error> {
+    pub fn issue<K: KeyManager>(&mut self, vc: &str, km: &K) -> Result<Vec<u8>, Error> {
         let iss = self.tel.make_issuance_event(vc)?;
-
-        // let management_tel_prefix = vcp.clone().prefix;
-
         // create vcp seal which will be inserted into issuer kel (ixn event)
         let iss_seal = Seal::Event(EventSeal {
             prefix: iss.prefix.clone(),
@@ -118,17 +132,17 @@ impl<'d, 't> Issuer<'d, 't> {
 
         let ixn_source_seal = EventSourceSeal {
             sn: ixn.event_message.event.sn,
-            digest: SelfAddressing::Blake3_256.derive(&ixn.serialize()?),
+            digest: SelfAddressing::Blake3_256.derive(&ixn.event_message.serialize()?),
         };
 
-        // before applying vcp to management tel, insert anchor event seal to be able to verify that operation.
         let verifiable_vcp = VerifiableEvent::new(Event::Vc(iss.clone()), ixn_source_seal.into());
         self.tel.process(verifiable_vcp.clone())?;
-        Ok(())
+        km.sign(&vc.as_bytes().to_vec()).map_err(|e| e.into())
     }
 
     pub fn revoke<K: KeyManager>(&mut self, message: &str, km: &K) -> Result<(), Error> {
-        let rev_event = self.tel.make_revoke_event(message)?;
+        let message_id = SelfAddressing::Blake3_256.derive(message.as_bytes());
+        let rev_event = self.tel.make_revoke_event(&message_id)?;
         // create rev seal which will be inserted into issuer kel (ixn event)
         let rev_seal = Seal::Event(EventSeal {
             prefix: rev_event.prefix.clone(),
@@ -144,12 +158,49 @@ impl<'d, 't> Issuer<'d, 't> {
             digest: SelfAddressing::Blake3_256.derive(&ixn.serialize()?),
         };
 
-        // before applying iss to tel, insert anchor event seal to be able to verify that operation.
         let verifiable_rev =
             VerifiableEvent::new(Event::Vc(rev_event.clone()), ixn_source_seal.into());
 
         self.tel.process(verifiable_rev.clone())?;
         Ok(())
+    }
+
+    pub fn check(&self, hash: &SelfAddressingPrefix) -> Result<TelState, Error> {
+        self.tel.get_vc_state(hash).map_err(|e| e.into())
+    }
+
+    pub fn get_pub_key(&self, vc_hash: SelfAddressingPrefix) -> Result<Vec<BasicPrefix>, Error> {
+        // Get last event vc event and its source seal.
+        let source_seal: EventSourceSeal = self
+            .tel
+            .get_tel(&vc_hash)?
+            .last()
+            .ok_or(Error::Generic("No events in tel".into()))?
+            .seal
+            .seal
+            .clone();
+
+        let issuer_pref = self.tel.get_management_tel_state()?.issuer;
+        let k = self
+            .kerl
+            .get_state_for_seal(&issuer_pref, source_seal.sn, &source_seal.digest)?;
+        let key_config = k.unwrap().current;
+        Ok(key_config.public_keys)
+    }
+
+    pub fn verify(&self, vc: &str, signature: &[u8]) -> Result<bool, Error> {
+        let vc_hash = SelfAddressing::Blake3_256.derive(vc.as_bytes());
+        match self.check(&vc_hash)? {
+            TelState::NotIsuued => Err(Error::Generic("Not yet issued".into())),
+            TelState::Issued(_) => {
+                let key = self.get_pub_key(vc_hash)?;
+                Ok(key.into_iter().fold(true, |acc, k| {
+                    let sspref = SelfSigning::Ed25519Sha512.derive(signature.to_vec());
+                    acc && k.verify(vc.as_bytes(), &sspref).unwrap()
+                }))
+            }
+            TelState::Revoked => Err(Error::Generic("VC was revoked".into())),
+        }
     }
 }
 
@@ -175,6 +226,7 @@ mod test {
         let km = CryptoBox::new()?;
 
         let message = "some vc";
+        let message_id = SelfAddressing::Blake3_256.derive(message.as_bytes());
 
         let tel_root = Builder::new().prefix("tel-test-db").tempdir().unwrap();
         fs::create_dir_all(tel_root.path()).unwrap();
@@ -182,36 +234,39 @@ mod test {
 
         let mut issuer = Issuer::new(&db, &tel_db);
 
-        issuer.incept_kel(&km)?;
-        issuer.incept_tel(&km)?;
+        issuer.init(&km, Some(vec![]), 0)?;
 
         let management_tel_prefix = issuer.tel.get_management_tel_state().unwrap().prefix;
-        // Chcek if iss event is in db.
+        // Chcek if tel inception event is in db.
         let o = issuer
             .tel
             .processor
             .get_management_events(&management_tel_prefix)?;
         assert!(o.is_some());
-        println!("{}", String::from_utf8(o.unwrap()).unwrap());
 
         let vc_hash = SelfAddressing::Blake3_256.derive(message.as_bytes());
-        issuer.issue(message, &km)?;
+        let signature = issuer.issue(message, &km)?;
+        let verification_result = issuer.verify(message, &signature);
+        assert!(matches!(verification_result, Ok(true)));
 
         // Chcek if iss event is in db.
-        let o = issuer
-            .tel
-            .processor
-            .get_events(&IdentifierPrefix::SelfAddressing(vc_hash))?;
-        assert!(o.is_some());
+        let o = issuer.tel.processor.get_events(&vc_hash)?;
+        assert_eq!(o.len(), 1);
 
-        let state = issuer.tel.get_vc_state(message.as_bytes())?;
+        let state = issuer.tel.get_vc_state(&message_id)?;
         assert!(matches!(state, TelState::Issued(_)));
 
         issuer.revoke(message, &km)?;
-        let state = issuer.tel.get_vc_state(message.as_bytes())?;
+        let state = issuer.tel.get_vc_state(&message_id)?;
         assert!(matches!(state, TelState::Revoked));
 
-        assert!(issuer.update_backers(&vec![], &vec![], &km).is_err());
+        // Check if revoke event is in db.
+        let o = issuer.tel.processor.get_events(&vc_hash)?;
+        assert_eq!(o.len(), 2);
+
+        // Message verification should return error, because it was revoked.
+        let verification_result = issuer.verify(message, &signature);
+        assert!(verification_result.is_err());
 
         Ok(())
     }
