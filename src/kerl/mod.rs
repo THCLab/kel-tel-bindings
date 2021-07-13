@@ -76,9 +76,8 @@ impl<'d> KERL<'d> {
 
     pub fn rotate<K: KeyManager>(
         &mut self,
-        key_manager: &mut K,
+        key_manager: &K,
     ) -> Result<SignedEventMessage, Error> {
-        key_manager.rotate()?;
         let rot = event_generator::make_rot(key_manager, self.get_state()?.unwrap()).unwrap();
 
         let rot = rot.sign(vec![AttachedSignaturePrefix::new(

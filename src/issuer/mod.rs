@@ -46,6 +46,8 @@ impl<'d, 't> Issuer<'d, 't> {
         self.incept_tel(km, backers, backer_threshold)
     }
 
+    /// Generate and process tel inception event for given backers and backer
+    /// threshold. None in backers argument sets config to no backers.
     fn incept_tel<K: KeyManager>(
         &mut self,
         km: &K,
@@ -84,12 +86,15 @@ impl<'d, 't> Issuer<'d, 't> {
         Ok(())
     }
 
+    // Generate and process kel inception event.
     fn incept_kel<K: KeyManager>(&mut self, km: &K) -> Result<(), Error> {
         self.kerl.incept(km)?;
         self.prefix = self.kerl.get_state().unwrap().unwrap().prefix;
         Ok(())
     }
 
+    // Generate and process management tel rotation event for given backers to
+    // add (ba) and backers to remove (br).
     pub fn update_backers<K: KeyManager>(
         &mut self,
         ba: &[IdentifierPrefix],
@@ -165,11 +170,15 @@ impl<'d, 't> Issuer<'d, 't> {
         Ok(())
     }
 
+    /// Check the state of message of given digest.
     pub fn check(&self, hash: &SelfAddressingPrefix) -> Result<TelState, Error> {
         self.tel.get_vc_state(hash).map_err(|e| e.into())
     }
 
-    pub fn get_pub_key(&self, vc_hash: SelfAddressingPrefix) -> Result<Vec<BasicPrefix>, Error> {
+    /// Returns keys that was used to sign message of given hash. Returns error,
+    /// if message was revoked or not yet issued.
+    pub fn get_pub_key(&self, vc_hash: SelfAddressingPrefix) ->
+    Result<Vec<BasicPrefix>, Error> {
         // Get last event vc event and its source seal.
         let source_seal: EventSourceSeal = self
             .tel
@@ -188,6 +197,7 @@ impl<'d, 't> Issuer<'d, 't> {
         Ok(key_config.public_keys)
     }
 
+    /// Verify signature for given message.
     pub fn verify(&self, vc: &str, signature: &[u8]) -> Result<bool, Error> {
         let vc_hash = SelfAddressing::Blake3_256.derive(vc.as_bytes());
         match self.check(&vc_hash)? {
@@ -208,10 +218,7 @@ impl<'d, 't> Issuer<'d, 't> {
 mod test {
     use std::fs;
 
-    use keri::{
-        database::sled::SledEventDatabase, derivation::self_addressing::SelfAddressing,
-        prefix::IdentifierPrefix, signer::CryptoBox,
-    };
+    use keri::{database::sled::SledEventDatabase, derivation::self_addressing::SelfAddressing, prefix::IdentifierPrefix, signer::{CryptoBox, KeyManager}};
     use teliox::{database::EventDatabase, state::vc_state::TelState};
 
     use crate::{error::Error, issuer::Issuer};
@@ -223,7 +230,7 @@ mod test {
         let root = Builder::new().prefix("test-db").tempdir().unwrap();
         fs::create_dir_all(root.path()).unwrap();
         let db = SledEventDatabase::new(root.path()).unwrap();
-        let km = CryptoBox::new()?;
+        let mut km = CryptoBox::new()?;
 
         let message = "some vc";
         let message_id = SelfAddressing::Blake3_256.derive(message.as_bytes());
@@ -255,6 +262,13 @@ mod test {
 
         let state = issuer.tel.get_vc_state(&message_id)?;
         assert!(matches!(state, TelState::Issued(_)));
+
+        // Try to verify message after key rotation.
+        km.rotate()?;
+        issuer.kerl.rotate(&km)?;
+
+        let verification_result = issuer.verify(message, &signature);
+        assert!(matches!(verification_result, Ok(true)));
 
         issuer.revoke(message, &km)?;
         let state = issuer.tel.get_vc_state(&message_id)?;
