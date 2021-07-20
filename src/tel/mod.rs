@@ -71,25 +71,25 @@ impl Tel {
         .map_err(|e| Error::from(e))
     }
 
-    pub fn make_issuance_event(&self, vc: &str) -> Result<VCEvent, Error> {
-        let vc_hash = self.derivation.derive(vc.as_bytes());
+    pub fn make_issuance_event(&self, message: &str) -> Result<VCEvent, Error> {
+        let message_hash = self.derivation.derive(message.as_bytes());
         event_generator::make_issuance_event(
             &self.get_management_tel_state()?,
-            vc_hash,
+            message_hash,
             &self.derivation,
             &self.serialization_format,
         )
         .map_err(|e| Error::from(e))
     }
 
-    pub fn make_revoke_event(&self, vc: &SelfAddressingPrefix) -> Result<VCEvent, Error> {
-        let vc_state = self.get_vc_state(vc)?;
+    pub fn make_revoke_event(&self, message_hash: &SelfAddressingPrefix) -> Result<VCEvent, Error> {
+        let vc_state = self.get_vc_state(message_hash)?;
         let last = match vc_state {
             TelState::Issued(last) => self.derivation.derive(&last),
             _ => return Err(Error::Generic("Inproper vc state".into())),
         };
         event_generator::make_revoke_event(
-            vc,
+            message_hash,
             last,
             &self.get_management_tel_state()?,
             &self.derivation,
@@ -111,16 +111,16 @@ impl Tel {
         Ok(state)
     }
 
-    pub fn get_vc_state(&self, vc_hash: &SelfAddressingPrefix) -> Result<TelState, Error> {
-        let vc_prefix = IdentifierPrefix::SelfAddressing(vc_hash.to_owned());
+    pub fn get_vc_state(&self, message_hash: &SelfAddressingPrefix) -> Result<TelState, Error> {
+        let message_prefix = IdentifierPrefix::SelfAddressing(message_hash.to_owned());
         EventProcessor::new(&self.database)
-            .get_vc_state(&vc_prefix)
+            .get_vc_state(&message_prefix)
             .map_err(|e| Error::from(e))
     }
 
-    pub fn get_tel(&self, vc_hash: &SelfAddressingPrefix) -> Result<Vec<VerifiableEvent>, Error> {
+    pub fn get_tel(&self, message_hash: &SelfAddressingPrefix) -> Result<Vec<VerifiableEvent>, Error> {
         EventProcessor::new(&self.database)
-            .get_events(vc_hash)
+            .get_events(message_hash)
             .map_err(|e| Error::from(e))
     }
 

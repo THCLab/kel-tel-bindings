@@ -130,8 +130,8 @@ impl Issuer {
         Ok(())
     }
 
-    pub fn issue<K: KeyManager>(&mut self, vc: &str, km: &K) -> Result<Vec<u8>, Error> {
-        let iss = self.tel.make_issuance_event(vc)?;
+    pub fn issue<K: KeyManager>(&mut self, message: &str, km: &K) -> Result<Vec<u8>, Error> {
+        let iss = self.tel.make_issuance_event(message)?;
         // create vcp seal which will be inserted into issuer kel (ixn event)
         let iss_seal = Seal::Event(EventSeal {
             prefix: iss.prefix.clone(),
@@ -148,7 +148,7 @@ impl Issuer {
 
         let verifiable_vcp = VerifiableEvent::new(Event::Vc(iss.clone()), ixn_source_seal.into());
         self.tel.process(verifiable_vcp.clone())?;
-        km.sign(&vc.as_bytes().to_vec()).map_err(|e| e.into())
+        km.sign(&message.as_bytes().to_vec()).map_err(|e| e.into())
     }
 
     pub fn revoke<K: KeyManager>(&mut self, message: &str, km: &K) -> Result<(), Error> {
@@ -183,12 +183,12 @@ impl Issuer {
 
     /// Returns keys that was used to sign message of given hash. Returns error,
     /// if message was revoked or not yet issued.
-    pub fn get_pub_key(&self, vc_hash: SelfAddressingPrefix) ->
+    pub fn get_pub_key(&self, message_hash: SelfAddressingPrefix) ->
     Result<Vec<BasicPrefix>, Error> {
         // Get last event vc event and its source seal.
         let source_seal: EventSourceSeal = self
             .tel
-            .get_tel(&vc_hash)?
+            .get_tel(&message_hash)?
             .last()
             .ok_or(Error::Generic("No events in tel".into()))?
             .seal
@@ -204,15 +204,15 @@ impl Issuer {
     }
 
     /// Verify signature for given message.
-    pub fn verify(&self, vc: &str, signature: &[u8]) -> Result<bool, Error> {
-        let vc_hash = SelfAddressing::Blake3_256.derive(vc.as_bytes());
-        match self.check(&vc_hash)? {
+    pub fn verify(&self, message: &str, signature: &[u8]) -> Result<bool, Error> {
+        let message_hash = SelfAddressing::Blake3_256.derive(message.as_bytes());
+        match self.check(&message_hash)? {
             TelState::NotIsuued => Err(Error::Generic("Not yet issued".into())),
             TelState::Issued(_) => {
-                let key = self.get_pub_key(vc_hash)?;
+                let key = self.get_pub_key(message_hash)?;
                 Ok(key.into_iter().fold(true, |acc, k| {
                     let sspref = SelfSigning::Ed25519Sha512.derive(signature.to_vec());
-                    acc && k.verify(vc.as_bytes(), &sspref).unwrap()
+                    acc && k.verify(message.as_bytes(), &sspref).unwrap()
                 }))
             }
             TelState::Revoked => Err(Error::Generic("VC was revoked".into())),
@@ -254,13 +254,13 @@ mod test {
         let o = issuer.tel.get_management_events()?;
         assert!(o.is_some());
 
-        let vc_hash = SelfAddressing::Blake3_256.derive(message.as_bytes());
+        let message_hash = SelfAddressing::Blake3_256.derive(message.as_bytes());
         let signature = issuer.issue(message, &km)?;
         let verification_result = issuer.verify(message, &signature);
         assert!(matches!(verification_result, Ok(true)));
 
         // Chcek if iss event is in db.
-        let o = issuer.tel.get_tel(&vc_hash)?;
+        let o = issuer.tel.get_tel(&message_hash)?;
         assert_eq!(o.len(), 1);
 
         let state = issuer.tel.get_vc_state(&message_id)?;
@@ -278,7 +278,7 @@ mod test {
         assert!(matches!(state, TelState::Revoked));
 
         // Check if revoke event is in db.
-        let o = issuer.tel.get_tel(&vc_hash)?;
+        let o = issuer.tel.get_tel(&message_hash)?;
         assert_eq!(o.len(), 2);
 
         // Message verification should return error, because it was revoked.
