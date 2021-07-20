@@ -20,17 +20,17 @@ use keri::{
 use crate::error::Error;
 pub mod event_generator;
 
-pub struct KERL<'d> {
+pub struct KERL {
     prefix: IdentifierPrefix,
-    processor: EventProcessor<'d>,
+    database: SledEventDatabase,
 }
 
-impl<'d> KERL<'d> {
+impl<'d> KERL {
     // incept a state and keys
-    pub fn new(db: &'d SledEventDatabase, prefix: IdentifierPrefix) -> Result<KERL<'d>, Error> {
+    pub fn new(db: SledEventDatabase, prefix: IdentifierPrefix) -> Result<KERL, Error> {
         Ok(KERL {
             prefix,
-            processor: EventProcessor::new(db),
+            database: db,
         })
     }
 
@@ -39,13 +39,13 @@ impl<'d> KERL<'d> {
         message: EventMessage,
         signature: Vec<u8>,
     ) -> Result<SignedEventMessage, Error> {
+        let processor = EventProcessor::new(&self.database);
         let sigged = message.sign(vec![AttachedSignaturePrefix::new(
             SelfSigning::Ed25519Sha512,
             signature,
             0,
         )]);
-        self.processor
-            .process(signed_message(&sigged.serialize()?).unwrap().1)?;
+        processor.process(signed_message(&sigged.serialize()?).unwrap().1)?;
         match message.event.event_data {
             EventData::Icp(_) => {
                 if self.prefix == IdentifierPrefix::default() {
@@ -66,18 +66,15 @@ impl<'d> KERL<'d> {
             0,
         )]);
 
-        self.processor
-            .process(signed_message(&sigged.serialize()?).unwrap().1)?;
+        let processor = EventProcessor::new(&self.database);
+        processor.process(signed_message(&sigged.serialize()?).unwrap().1)?;
 
         self.prefix = icp.event.prefix;
 
         Ok(sigged)
     }
 
-    pub fn rotate<K: KeyManager>(
-        &mut self,
-        key_manager: &K,
-    ) -> Result<SignedEventMessage, Error> {
+    pub fn rotate<K: KeyManager>(&mut self, key_manager: &K) -> Result<SignedEventMessage, Error> {
         let rot = event_generator::make_rot(key_manager, self.get_state()?.unwrap()).unwrap();
 
         let rot = rot.sign(vec![AttachedSignaturePrefix::new(
@@ -86,8 +83,8 @@ impl<'d> KERL<'d> {
             0,
         )]);
 
-        self.processor
-            .process(signed_message(&rot.serialize()?).unwrap().1)?;
+        let processor = EventProcessor::new(&self.database);
+        processor.process(signed_message(&rot.serialize()?).unwrap().1)?;
 
         Ok(rot)
     }
@@ -115,8 +112,8 @@ impl<'d> KERL<'d> {
             0,
         )]);
 
-        self.processor
-            .process(signed_message(&ixn.serialize()?).unwrap().1)?;
+        let processor = EventProcessor::new(&self.database);
+        processor.process(signed_message(&ixn.serialize()?).unwrap().1)?;
 
         Ok(ixn)
     }
@@ -136,23 +133,20 @@ impl<'d> KERL<'d> {
             0,
         )]);
 
-        self.processor
-            .process(signed_message(&ixn.serialize()?).unwrap().1)?;
+        let processor = EventProcessor::new(&self.database);
+        processor.process(signed_message(&ixn.serialize()?).unwrap().1)?;
 
         Ok(ixn)
     }
 
     pub fn respond<K: KeyManager>(&self, msg: &[u8], key_manager: &K) -> Result<Vec<u8>, Error> {
+        let processor = EventProcessor::new(&self.database);
         let events = signed_event_stream(msg)
             .map_err(|e| Error::Generic(e.to_string()))?
             .1;
         let (processed_ok, _processed_failed): (Vec<_>, Vec<_>) = events
             .into_iter()
-            .map(|event| {
-                self.processor
-                    .process(event.clone())
-                    .and_then(|_| Ok(event))
-            })
+            .map(|event| processor.process(event.clone()).and_then(|_| Ok(event)))
             .partition(Result::is_ok);
         let response: Vec<u8> = processed_ok
             .into_iter()
@@ -162,14 +156,13 @@ impl<'d> KERL<'d> {
                     Deserialized::Event(ev) => {
                         let mut buf = vec![];
                         if let EventData::Icp(_) = ev.event.event.event.event_data {
-                            if !self.processor.has_receipt(
+                            if !processor.has_receipt(
                                 &self.prefix,
                                 0,
                                 &ev.event.event.event.prefix,
                             )? {
                                 buf.append(
-                                    &mut self
-                                        .processor
+                                    &mut processor
                                         .get_kerl(&self.prefix)?
                                         .ok_or(Error::Generic("KEL is empty".into()))?,
                                 )
@@ -198,8 +191,9 @@ impl<'d> KERL<'d> {
     ) -> Result<SignedEventMessage, Error> {
         let ser = event.serialize()?;
         let signature = key_manager.sign(&ser)?;
-        let validator_event_seal = self
-            .processor
+        let processor = EventProcessor::new(&self.database);
+
+        let validator_event_seal = processor
             .get_last_establishment_event_seal(&self.prefix)?
             .ok_or(Error::Generic("No establishment event seal".into()))?;
 
@@ -212,20 +206,19 @@ impl<'d> KERL<'d> {
             signature,
             0,
         )]);
-        self.processor
-            .process(signed_message(&rcp.serialize()?).unwrap().1)?;
+        processor.process(signed_message(&rcp.serialize()?).unwrap().1)?;
 
         Ok(rcp)
     }
 
     pub fn get_state(&self) -> Result<Option<IdentifierState>, Error> {
-        self.processor
+        EventProcessor::new(&self.database)
             .compute_state(&self.prefix)
             .map_err(|e| Error::KeriError(e))
     }
 
     pub fn get_kerl(&self) -> Result<Option<Vec<u8>>, Error> {
-        self.processor
+        EventProcessor::new(&self.database)
             .get_kerl(&self.prefix)
             .map_err(|e| Error::KeriError(e))
     }
@@ -234,7 +227,7 @@ impl<'d> KERL<'d> {
         &self,
         prefix: &IdentifierPrefix,
     ) -> Result<Option<IdentifierState>, Error> {
-        self.processor
+        EventProcessor::new(&self.database)
             .compute_state(prefix)
             .map_err(|e| Error::KeriError(e))
     }
@@ -245,8 +238,7 @@ impl<'d> KERL<'d> {
         sn: u64,
         digest: &SelfAddressingPrefix,
     ) -> Result<Option<IdentifierState>, Error> {
-        match self
-            .processor
+        match EventProcessor::new(&self.database)
             .compute_state_at_sn(&prefix, sn)
             .map_err(|e| Error::KeriError(e))?
         {
