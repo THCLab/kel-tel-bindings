@@ -4,18 +4,19 @@ use keri::{
     derivation::{self_addressing::SelfAddressing, self_signing::SelfSigning},
     event::{
         event_data::EventData,
-        sections::seal::{DigestSeal, EventSeal, Seal},
+        sections::seal::{DigestSeal, Seal},
         EventMessage,
     },
     event_message::parse::signed_message,
     event_message::parse::{signed_event_stream, Deserialized},
     event_message::SignedEventMessage,
     prefix::AttachedSignaturePrefix,
-    prefix::{IdentifierPrefix, SelfAddressingPrefix, Prefix},
+    prefix::{IdentifierPrefix, SelfAddressingPrefix},
     processor::EventProcessor,
     signer::KeyManager,
     state::IdentifierState,
 };
+use teliox::event::Event;
 
 use crate::error::Error;
 pub mod event_generator;
@@ -34,7 +35,7 @@ impl<'d> KERL {
         })
     }
 
-    pub fn process(
+    fn process(
         &mut self,
         message: EventMessage,
         signature: Vec<u8>,
@@ -211,14 +212,24 @@ impl<'d> KERL {
         Ok(rcp)
     }
 
+    pub fn get_prefix(&self) -> IdentifierPrefix {
+        self.prefix.clone()
+    }
+
     pub fn get_state(&self) -> Result<Option<IdentifierState>, Error> {
         EventProcessor::new(&self.database)
             .compute_state(&self.prefix)
             .map_err(|e| Error::KeriError(e))
     }
 
-    pub fn get_event_at_sn(&self, sn: u64) -> Result<Option<EventMessage>, Error> {
-        Ok(EventProcessor::new(&self.database).get_event_at_sn(&self.prefix, sn)?.map(|e| e.event.event_message))
+    pub fn get_event_at_sn(
+        &self,
+        id: &IdentifierPrefix,
+        sn: u64,
+    ) -> Result<Option<EventMessage>, Error> {
+        Ok(EventProcessor::new(&self.database)
+            .get_event_at_sn(id, sn)?
+            .map(|e| e.event.event_message))
     }
 
     pub fn get_kerl(&self) -> Result<Option<Vec<u8>>, Error> {
@@ -257,18 +268,29 @@ impl<'d> KERL {
         }
     }
 
-    pub fn check_seal(&self, sn: u64, id: &IdentifierPrefix, data: &[u8]) -> Result<bool, Error> {
-        let event = self.get_event_at_sn(sn)?;
+    // Checks if event from issuers kel has event seal of tel event in its data field.
+    pub fn check_seal(
+        &self,
+        sn: u64,
+        issuer_id: &IdentifierPrefix,
+        tel_ev: &Event,
+    ) -> Result<bool, Error> {
+        let event = self.get_event_at_sn(issuer_id, sn)?;
+        let data = tel_ev.serialize()?;
         Ok(match event.unwrap().event.event_data {
             EventData::Icp(icp) => Ok(icp.data),
             EventData::Rot(rot) => Ok(rot.data),
             EventData::Ixn(ixn) => Ok(ixn.data),
             _ => Err(Error::Generic("Empty data".into())),
-        }?.iter().any(|seal| match seal {
+        }?
+        .iter()
+        .any(|seal| match seal {
             Seal::Event(es) => {
-                &es.prefix == id && es.event_digest.verify_binding(data)},
+                es.prefix == tel_ev.get_prefix()
+                    && es.sn == tel_ev.get_sn()
+                    && es.event_digest.verify_binding(&data)
+            }
             _ => false,
-            
         }))
     }
 }

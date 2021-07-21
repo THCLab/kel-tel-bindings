@@ -1,15 +1,11 @@
 use keri::{
     derivation::self_addressing::SelfAddressing,
     event::SerializationFormats,
-    prefix::{IdentifierPrefix, Prefix, SelfAddressingPrefix},
+    prefix::{IdentifierPrefix, SelfAddressingPrefix},
 };
 use teliox::{
     database::EventDatabase,
-    event::{
-        manager_event::{Config, ManagerTelEvent},
-        vc_event::VCEvent,
-        verifiable_event::VerifiableEvent,
-    },
+    event::{manager_event::Config, verifiable_event::VerifiableEvent, Event},
     processor::EventProcessor,
     state::{vc_state::TelState, ManagerTelState, State},
     tel::event_generator,
@@ -44,7 +40,7 @@ impl Tel {
         config: Vec<Config>,
         backer_threshold: u64,
         backers: Vec<IdentifierPrefix>,
-    ) -> Result<ManagerTelEvent, Error> {
+    ) -> Result<Event, Error> {
         event_generator::make_inception_event(
             issuer_prefix,
             config,
@@ -60,7 +56,7 @@ impl Tel {
         &self,
         ba: &[IdentifierPrefix],
         br: &[IdentifierPrefix],
-    ) -> Result<ManagerTelEvent, Error> {
+    ) -> Result<Event, Error> {
         event_generator::make_rotation_event(
             &self.get_management_tel_state()?,
             ba,
@@ -71,7 +67,7 @@ impl Tel {
         .map_err(|e| Error::from(e))
     }
 
-    pub fn make_issuance_event(&self, message: &str) -> Result<VCEvent, Error> {
+    pub fn make_issuance_event(&self, message: &str) -> Result<Event, Error> {
         let message_hash = self.derivation.derive(message.as_bytes());
         event_generator::make_issuance_event(
             &self.get_management_tel_state()?,
@@ -82,7 +78,7 @@ impl Tel {
         .map_err(|e| Error::from(e))
     }
 
-    pub fn make_revoke_event(&self, message_hash: &SelfAddressingPrefix) -> Result<VCEvent, Error> {
+    pub fn make_revoke_event(&self, message_hash: &SelfAddressingPrefix) -> Result<Event, Error> {
         let vc_state = self.get_vc_state(message_hash)?;
         let last = match vc_state {
             TelState::Issued(last) => self.derivation.derive(&last),

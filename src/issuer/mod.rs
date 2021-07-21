@@ -1,7 +1,16 @@
 use std::path::Path;
 
 use crate::{error::Error, kerl::KERL, tel::Tel};
-use keri::{database::sled::SledEventDatabase, derivation::{self_addressing::SelfAddressing, self_signing::SelfSigning}, event::{event_data::EventData, sections::seal::{EventSeal, Seal}}, prefix::{BasicPrefix, IdentifierPrefix, Prefix, SelfAddressingPrefix}, signer::KeyManager};
+use keri::{
+    database::sled::SledEventDatabase,
+    derivation::{self_addressing::SelfAddressing, self_signing::SelfSigning},
+    event::{
+        sections::seal::{EventSeal, Seal},
+        EventMessage,
+    },
+    prefix::{BasicPrefix, IdentifierPrefix, SelfAddressingPrefix},
+    signer::KeyManager,
+};
 use teliox::{
     database::EventDatabase,
     event::{manager_event::Config, verifiable_event::VerifiableEvent, Event},
@@ -52,34 +61,28 @@ impl<K: KeyManager> Controller<K> {
         backers: Option<Vec<IdentifierPrefix>>,
         backer_threshold: u64,
     ) -> Result<(), Error> {
-        let (config, b) = match backers {
+        let (config, backers) = match backers {
             Some(backers) => (vec![], backers),
             None => (vec![Config::NoBackers], vec![]),
         };
         let vcp = self.tel.make_inception_event(
-            self.kerl.get_state().unwrap().unwrap().prefix.clone(),
+            self.kerl.get_prefix(),
             config,
             backer_threshold,
-            b,
+            backers,
         )?;
 
         // create vcp seal which will be inserted into issuer kel (ixn event)
-        let vcp_seal = Seal::Event(EventSeal {
-            prefix: vcp.clone().prefix,
-            sn: vcp.sn,
-            event_digest: SelfAddressing::Blake3_256.derive(&vcp.serialize()?),
-        });
+        let vcp_seal = to_event_seal(&vcp)?;
 
-        let ixn = self.kerl.make_ixn_with_seal(&vec![vcp_seal], &self.key_manager)?;
+        let ixn = self
+            .kerl
+            .make_ixn_with_seal(&vec![vcp_seal], &self.key_manager)?;
 
-        let ixn_source_seal = EventSourceSeal {
-            sn: ixn.event_message.event.sn,
-            digest: SelfAddressing::Blake3_256.derive(&ixn.event_message.serialize()?),
-        };
+        let ixn_source_seal = to_source_seal(&ixn.event_message)?;
 
-        // before applying vcp to management tel, insert anchor event seal to be able to verify that operation.
-        let verifiable_vcp =
-            VerifiableEvent::new(Event::Management(vcp.clone()), ixn_source_seal.into());
+        // before applying vcp to management tel, insert anchor event seal.
+        let verifiable_vcp = VerifiableEvent::new(vcp, ixn_source_seal.into());
         self.tel.process(verifiable_vcp)?;
 
         Ok(())
@@ -101,67 +104,51 @@ impl<K: KeyManager> Controller<K> {
         let rcp = self.tel.make_rotation_event(ba, br)?;
 
         // create rcp seal which will be inserted into issuer kel (ixn event)
-        let rcp_seal = Seal::Event(EventSeal {
-            prefix: rcp.prefix.clone(),
-            sn: rcp.sn,
-            event_digest: SelfAddressing::Blake3_256.derive(&rcp.serialize()?),
-        });
+        let rcp_seal = to_event_seal(&rcp)?;
+        let ixn = self
+            .kerl
+            .make_ixn_with_seal(&vec![rcp_seal], &self.key_manager)?;
 
-        let ixn = self.kerl.make_ixn_with_seal(&vec![rcp_seal], &self.key_manager)?;
-
-        let ixn_source_seal = EventSourceSeal {
-            sn: ixn.event_message.event.sn,
-            digest: SelfAddressing::Blake3_256.derive(&ixn.serialize()?),
-        };
+        let ixn_source_seal = to_source_seal(&ixn.event_message)?;
 
         // before applying vcp to management tel, insert anchor event seal to be able to verify that operation.
-        let verifiable_rcp =
-            VerifiableEvent::new(Event::Management(rcp.clone()), ixn_source_seal.into());
-        self.tel.process(verifiable_rcp.clone())?;
+        let verifiable_rcp = VerifiableEvent::new(rcp, ixn_source_seal.into());
+        self.tel.process(verifiable_rcp)?;
         Ok(())
     }
 
     pub fn issue(&mut self, message: &str) -> Result<Vec<u8>, Error> {
         let iss = self.tel.make_issuance_event(message)?;
         // create vcp seal which will be inserted into issuer kel (ixn event)
-        let iss_seal = Seal::Event(EventSeal {
-            prefix: iss.prefix.clone(),
-            sn: iss.sn,
-            event_digest: SelfAddressing::Blake3_256.derive(&iss.serialize()?),
-        });
+        let iss_seal = to_event_seal(&iss)?;
 
-        let ixn = self.kerl.make_ixn_with_seal(&vec![iss_seal], &self.key_manager)?;
+        let ixn = self
+            .kerl
+            .make_ixn_with_seal(&vec![iss_seal], &self.key_manager)?;
 
-        let ixn_source_seal = EventSourceSeal {
-            sn: ixn.event_message.event.sn,
-            digest: SelfAddressing::Blake3_256.derive(&ixn.event_message.serialize()?),
-        };
+        let ixn_source_seal = to_source_seal(&ixn.event_message)?;
 
-        let verifiable_vcp = VerifiableEvent::new(Event::Vc(iss.clone()), ixn_source_seal.into());
-        self.tel.process(verifiable_vcp.clone())?;
-        self.key_manager.sign(&message.as_bytes().to_vec()).map_err(|e| e.into())
+        let verifiable_vcp = VerifiableEvent::new(iss, ixn_source_seal.into());
+        self.tel.process(verifiable_vcp)?;
+        self.key_manager
+            .sign(&message.as_bytes().to_vec())
+            .map_err(|e| e.into())
     }
 
     pub fn revoke(&mut self, message: &str) -> Result<(), Error> {
         let message_id = SelfAddressing::Blake3_256.derive(message.as_bytes());
         let rev_event = self.tel.make_revoke_event(&message_id)?;
         // create rev seal which will be inserted into issuer kel (ixn event)
-        let rev_seal = Seal::Event(EventSeal {
-            prefix: rev_event.prefix.clone(),
-            sn: rev_event.sn,
-            event_digest: SelfAddressing::Blake3_256.derive(&rev_event.serialize()?),
-        });
+        let rev_seal = to_event_seal(&rev_event)?;
 
-        let ixn = self.kerl.make_ixn_with_seal(&vec![rev_seal], &self.key_manager)?;
+        let ixn = self
+            .kerl
+            .make_ixn_with_seal(&vec![rev_seal], &self.key_manager)?;
 
         // Make source seal.
-        let ixn_source_seal = EventSourceSeal {
-            sn: ixn.event_message.event.sn,
-            digest: SelfAddressing::Blake3_256.derive(&ixn.serialize()?),
-        };
+        let ixn_source_seal = to_source_seal(&ixn.event_message)?;
 
-        let verifiable_rev =
-            VerifiableEvent::new(Event::Vc(rev_event.clone()), ixn_source_seal.into());
+        let verifiable_rev = VerifiableEvent::new(rev_event, ixn_source_seal.into());
 
         self.tel.process(verifiable_rev.clone())?;
         Ok(())
@@ -190,35 +177,30 @@ impl<K: KeyManager> Controller<K> {
     ) -> Result<Vec<BasicPrefix>, Error> {
         let (tel_event, source_seal) = {
             let ver_event = self
-            .tel
-            .get_tel(&message_hash)?
-            // TODO what if events are out of order?
-            .last()
-            .ok_or(Error::Generic("No events in tel".into()))?.to_owned();
+                .tel
+                .get_tel(&message_hash)?
+                // TODO what if events are out of order?
+                .last()
+                .ok_or(Error::Generic("No events in tel".into()))?
+                .to_owned();
             (ver_event.event, ver_event.seal.seal)
         };
 
-        let event_prefix = match tel_event {
-            Event::Management(ref man) => &man.prefix,
-            Event::Vc(ref vc) => &vc.prefix,
-        };
-        
-        let serialized_event = match tel_event {
-            Event::Management(ref man) => man.serialize()?,
-            Event::Vc(ref ev) => ev.serialize()?,
-        };
-        if self.kerl.check_seal(source_seal.sn, event_prefix, &serialized_event)?{
+        if self
+            .kerl
+            .check_seal(source_seal.sn, &self.tel.get_issuer()?, &tel_event)?
+        {
+            let k = self.kerl.get_state_for_seal(
+                &self.tel.get_issuer()?,
+                source_seal.sn,
+                &source_seal.digest,
+            )?;
 
-        let k = self.kerl.get_state_for_seal(
-            &self.tel.get_issuer()?,
-            source_seal.sn,
-            &source_seal.digest,
-        )?;
-
-        match k {
-            Some(state) => Ok(state.current.public_keys),
-            None => Err(Error::Generic("No key data".into())),
-        }} else {
+            match k {
+                Some(state) => Ok(state.current.public_keys),
+                None => Err(Error::Generic("No key data".into())),
+            }
+        } else {
             Err(Error::Generic("improper seal".into()))
         }
     }
@@ -240,12 +222,23 @@ impl<K: KeyManager> Controller<K> {
     }
 }
 
+fn to_event_seal(event: &Event) -> Result<Seal, Error> {
+    Ok(Seal::Event(EventSeal {
+        prefix: event.get_prefix(),
+        sn: event.get_sn(),
+        event_digest: SelfAddressing::Blake3_256.derive(&event.serialize()?),
+    }))
+}
+fn to_source_seal(event_message: &EventMessage) -> Result<EventSourceSeal, Error> {
+    Ok(EventSourceSeal {
+        sn: event_message.event.sn,
+        digest: SelfAddressing::Blake3_256.derive(&event_message.serialize()?),
+    })
+}
+
 #[cfg(test)]
 mod test {
-    use keri::{
-        derivation::self_addressing::SelfAddressing,
-        signer::CryptoBox,
-    };
+    use keri::{derivation::self_addressing::SelfAddressing, signer::CryptoBox};
     use teliox::state::vc_state::TelState;
 
     use crate::{error::Error, issuer::Controller};

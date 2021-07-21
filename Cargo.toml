@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-teliox = { git="https://github.com/THCLab/teliox.git" }
+teliox = { git = "https://github.com/THCLab/teliox.git"}
 keri = { git = "https://github.com/decentralized-identity/keriox" }
 serde_json = "1.0"
 thiserror = "1.0"
