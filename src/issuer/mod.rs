@@ -1,13 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::{error::Error, kerl::KERL, tel::Tel};
-use keri::{
-    database::sled::SledEventDatabase,
-    derivation::{self_addressing::SelfAddressing, self_signing::SelfSigning},
-    event::sections::seal::{EventSeal, Seal},
-    prefix::{BasicPrefix, IdentifierPrefix, Prefix, SelfAddressingPrefix},
-    signer::KeyManager,
-};
+use keri::{database::sled::SledEventDatabase, derivation::{self_addressing::SelfAddressing, self_signing::SelfSigning}, event::{event_data::EventData, sections::seal::{EventSeal, Seal}}, prefix::{BasicPrefix, IdentifierPrefix, Prefix, SelfAddressingPrefix}, signer::KeyManager};
 use teliox::{
     database::EventDatabase,
     event::{manager_event::Config, verifiable_event::VerifiableEvent, Event},
@@ -15,13 +9,14 @@ use teliox::{
     state::vc_state::TelState,
 };
 
-pub struct Controller {
+pub struct Controller<K: KeyManager> {
+    key_manager: K,
     kerl: KERL,
     tel: Tel,
 }
 
-impl Controller {
-    pub fn new(root: &Path, tel_db: &Path) -> Self {
+impl<K: KeyManager> Controller<K> {
+    fn new(root: &Path, tel_db: &Path, key_manager: K) -> Self {
         let db = SledEventDatabase::new(root).unwrap();
         let tel_db = EventDatabase::new(tel_db).unwrap();
         let tel = Tel::new(
@@ -31,29 +26,29 @@ impl Controller {
         );
 
         Controller {
+            key_manager,
             kerl: KERL::new(db, IdentifierPrefix::default()).unwrap(),
             tel,
         }
     }
 
-    pub fn init<K: KeyManager>(
+    pub fn init(
         kel_db_path: &Path,
         tel_db_path: &Path,
-        km: &K,
+        km: K,
         backers: Option<Vec<IdentifierPrefix>>,
         backer_threshold: u64,
     ) -> Result<Self, Error> {
-        let mut controller = Controller::new(kel_db_path, tel_db_path);
-        controller.incept_kel(km)?;
-        controller.incept_tel(km, backers, backer_threshold)?;
+        let mut controller = Controller::new(kel_db_path, tel_db_path, km);
+        controller.incept_kel()?;
+        controller.incept_tel(backers, backer_threshold)?;
         Ok(controller)
     }
 
     /// Generate and process tel inception event for given backers and backer
     /// threshold. None in backers argument sets config to no backers.
-    fn incept_tel<K: KeyManager>(
+    fn incept_tel(
         &mut self,
-        km: &K,
         backers: Option<Vec<IdentifierPrefix>>,
         backer_threshold: u64,
     ) -> Result<(), Error> {
@@ -75,7 +70,7 @@ impl Controller {
             event_digest: SelfAddressing::Blake3_256.derive(&vcp.serialize()?),
         });
 
-        let ixn = self.kerl.make_ixn_with_seal(&vec![vcp_seal], km)?;
+        let ixn = self.kerl.make_ixn_with_seal(&vec![vcp_seal], &self.key_manager)?;
 
         let ixn_source_seal = EventSourceSeal {
             sn: ixn.event_message.event.sn,
@@ -91,18 +86,17 @@ impl Controller {
     }
 
     // Generate and process kel inception event.
-    fn incept_kel<K: KeyManager>(&mut self, km: &K) -> Result<(), Error> {
-        self.kerl.incept(km)?;
+    fn incept_kel(&mut self) -> Result<(), Error> {
+        self.kerl.incept(&self.key_manager)?;
         Ok(())
     }
 
     // Generate and process management tel rotation event for given backers to
     // add (ba) and backers to remove (br).
-    pub fn update_backers<K: KeyManager>(
+    pub fn update_backers(
         &mut self,
         ba: &[IdentifierPrefix],
         br: &[IdentifierPrefix],
-        km: &K,
     ) -> Result<(), Error> {
         let rcp = self.tel.make_rotation_event(ba, br)?;
 
@@ -113,7 +107,7 @@ impl Controller {
             event_digest: SelfAddressing::Blake3_256.derive(&rcp.serialize()?),
         });
 
-        let ixn = self.kerl.make_ixn_with_seal(&vec![rcp_seal], km)?;
+        let ixn = self.kerl.make_ixn_with_seal(&vec![rcp_seal], &self.key_manager)?;
 
         let ixn_source_seal = EventSourceSeal {
             sn: ixn.event_message.event.sn,
@@ -127,7 +121,7 @@ impl Controller {
         Ok(())
     }
 
-    pub fn issue<K: KeyManager>(&mut self, message: &str, km: &K) -> Result<Vec<u8>, Error> {
+    pub fn issue(&mut self, message: &str) -> Result<Vec<u8>, Error> {
         let iss = self.tel.make_issuance_event(message)?;
         // create vcp seal which will be inserted into issuer kel (ixn event)
         let iss_seal = Seal::Event(EventSeal {
@@ -136,7 +130,7 @@ impl Controller {
             event_digest: SelfAddressing::Blake3_256.derive(&iss.serialize()?),
         });
 
-        let ixn = self.kerl.make_ixn_with_seal(&vec![iss_seal], km)?;
+        let ixn = self.kerl.make_ixn_with_seal(&vec![iss_seal], &self.key_manager)?;
 
         let ixn_source_seal = EventSourceSeal {
             sn: ixn.event_message.event.sn,
@@ -145,10 +139,10 @@ impl Controller {
 
         let verifiable_vcp = VerifiableEvent::new(Event::Vc(iss.clone()), ixn_source_seal.into());
         self.tel.process(verifiable_vcp.clone())?;
-        km.sign(&message.as_bytes().to_vec()).map_err(|e| e.into())
+        self.key_manager.sign(&message.as_bytes().to_vec()).map_err(|e| e.into())
     }
 
-    pub fn revoke<K: KeyManager>(&mut self, message: &str, km: &K) -> Result<(), Error> {
+    pub fn revoke(&mut self, message: &str) -> Result<(), Error> {
         let message_id = SelfAddressing::Blake3_256.derive(message.as_bytes());
         let rev_event = self.tel.make_revoke_event(&message_id)?;
         // create rev seal which will be inserted into issuer kel (ixn event)
@@ -158,7 +152,7 @@ impl Controller {
             event_digest: SelfAddressing::Blake3_256.derive(&rev_event.serialize()?),
         });
 
-        let ixn = self.kerl.make_ixn_with_seal(&vec![rev_seal], km)?;
+        let ixn = self.kerl.make_ixn_with_seal(&vec![rev_seal], &self.key_manager)?;
 
         // Make source seal.
         let ixn_source_seal = EventSourceSeal {
@@ -173,8 +167,9 @@ impl Controller {
         Ok(())
     }
 
-    pub fn rotate<K: KeyManager>(&self, km: &K) -> Result<(), Error> {
-        self.kerl.rotate(km)?;
+    pub fn rotate(&mut self) -> Result<(), Error> {
+        self.key_manager.rotate()?;
+        self.kerl.rotate(&self.key_manager)?;
         Ok(())
     }
 
@@ -193,25 +188,38 @@ impl Controller {
         &self,
         message_hash: SelfAddressingPrefix,
     ) -> Result<Vec<BasicPrefix>, Error> {
-        // Get last event vc event and its source seal.
-        let source_seal: EventSourceSeal = self
+        let (tel_event, source_seal) = {
+            let ver_event = self
             .tel
             .get_tel(&message_hash)?
             // TODO what if events are out of order?
             .last()
-            .ok_or(Error::Generic("No events in tel".into()))?
-            .seal
-            .seal
-            .clone();
+            .ok_or(Error::Generic("No events in tel".into()))?.to_owned();
+            (ver_event.event, ver_event.seal.seal)
+        };
+
+        let event_prefix = match tel_event {
+            Event::Management(ref man) => &man.prefix,
+            Event::Vc(ref vc) => &vc.prefix,
+        };
+        
+        let serialized_event = match tel_event {
+            Event::Management(ref man) => man.serialize()?,
+            Event::Vc(ref ev) => ev.serialize()?,
+        };
+        if self.kerl.check_seal(source_seal.sn, event_prefix, &serialized_event)?{
 
         let k = self.kerl.get_state_for_seal(
             &self.tel.get_issuer()?,
             source_seal.sn,
             &source_seal.digest,
         )?;
+
         match k {
             Some(state) => Ok(state.current.public_keys),
             None => Err(Error::Generic("No key data".into())),
+        }} else {
+            Err(Error::Generic("improper seal".into()))
         }
     }
 
@@ -236,7 +244,7 @@ impl Controller {
 mod test {
     use keri::{
         derivation::self_addressing::SelfAddressing,
-        signer::{CryptoBox, KeyManager},
+        signer::CryptoBox,
     };
     use teliox::state::vc_state::TelState;
 
@@ -248,19 +256,15 @@ mod test {
         // Create test db and key manager.
         let root = Builder::new().prefix("test-db").tempdir().unwrap();
         let tel_root = Builder::new().prefix("tel-test-db").tempdir().unwrap();
-        let mut km = CryptoBox::new()?;
+        let km = CryptoBox::new()?;
 
         let message = "some vc";
 
-        let mut issuer = Controller::init(root.path(), tel_root.path(), &km, Some(vec![]), 0)?;
-
-        // Chcek if tel inception event is in db.
-        let o = issuer.tel.get_management_events()?;
-        assert!(o.is_some());
+        let mut issuer = Controller::init(root.path(), tel_root.path(), km, Some(vec![]), 0)?;
 
         let message_hash = SelfAddressing::Blake3_256.derive(message.as_bytes());
 
-        let signature = issuer.issue(message, &km)?;
+        let signature = issuer.issue(message)?;
         let verification_result = issuer.verify(message, &signature);
         assert!(matches!(verification_result, Ok(true)));
 
@@ -272,13 +276,12 @@ mod test {
         assert!(matches!(state, TelState::Issued(_)));
 
         // Try to verify message after key rotation.
-        km.rotate()?;
-        issuer.rotate(&km)?;
+        issuer.rotate()?;
 
         let verification_result = issuer.verify(message, &signature);
         assert!(matches!(verification_result, Ok(true)));
 
-        issuer.revoke(message, &km)?;
+        issuer.revoke(message)?;
         let state = issuer.get_vc_state(&message_hash)?;
         assert!(matches!(state, TelState::Revoked));
 

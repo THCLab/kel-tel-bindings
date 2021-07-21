@@ -11,7 +11,7 @@ use keri::{
     event_message::parse::{signed_event_stream, Deserialized},
     event_message::SignedEventMessage,
     prefix::AttachedSignaturePrefix,
-    prefix::{IdentifierPrefix, SelfAddressingPrefix},
+    prefix::{IdentifierPrefix, SelfAddressingPrefix, Prefix},
     processor::EventProcessor,
     signer::KeyManager,
     state::IdentifierState,
@@ -217,6 +217,10 @@ impl<'d> KERL {
             .map_err(|e| Error::KeriError(e))
     }
 
+    pub fn get_event_at_sn(&self, sn: u64) -> Result<Option<EventMessage>, Error> {
+        Ok(EventProcessor::new(&self.database).get_event_at_sn(&self.prefix, sn)?.map(|e| e.event.event_message))
+    }
+
     pub fn get_kerl(&self) -> Result<Option<Vec<u8>>, Error> {
         EventProcessor::new(&self.database)
             .get_kerl(&self.prefix)
@@ -251,5 +255,20 @@ impl<'d> KERL {
             }
             None => Ok(None),
         }
+    }
+
+    pub fn check_seal(&self, sn: u64, id: &IdentifierPrefix, data: &[u8]) -> Result<bool, Error> {
+        let event = self.get_event_at_sn(sn)?;
+        Ok(match event.unwrap().event.event_data {
+            EventData::Icp(icp) => Ok(icp.data),
+            EventData::Rot(rot) => Ok(rot.data),
+            EventData::Ixn(ixn) => Ok(ixn.data),
+            _ => Err(Error::Generic("Empty data".into())),
+        }?.iter().any(|seal| match seal {
+            Seal::Event(es) => {
+                &es.prefix == id && es.event_digest.verify_binding(data)},
+            _ => false,
+            
+        }))
     }
 }
