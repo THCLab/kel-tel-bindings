@@ -118,7 +118,10 @@ impl Tel {
             .map_err(|e| Error::from(e))
     }
 
-    pub fn get_tel(&self, message_hash: &SelfAddressingPrefix) -> Result<Vec<VerifiableEvent>, Error> {
+    pub fn get_tel(
+        &self,
+        message_hash: &SelfAddressingPrefix,
+    ) -> Result<Vec<VerifiableEvent>, Error> {
         EventProcessor::new(&self.database)
             .get_events(message_hash)
             .map_err(|e| Error::from(e))
@@ -134,5 +137,9 @@ impl Tel {
         EventProcessor::new(&self.database)
             .get_management_events(&self.tel_prefix)
             .map_err(|e| Error::from(e))
+    }
+
+    pub fn get_issuer(&self) -> Result<IdentifierPrefix, Error> {
+        Ok(self.get_management_tel_state()?.issuer)
     }
 }
