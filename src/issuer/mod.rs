@@ -30,8 +30,6 @@ impl<K: KeyManager> Controller<K> {
         let tel_db = EventDatabase::new(tel_db).unwrap();
         let tel = Tel::new(
             tel_db,
-            keri::event::SerializationFormats::JSON,
-            SelfAddressing::Blake3_256,
         );
 
         Controller {
@@ -101,7 +99,7 @@ impl<K: KeyManager> Controller<K> {
 
     // Generate issue event, update tel and kel and return signature.
     pub fn issue(&mut self, message: &str) -> Result<Vec<u8>, Error> {
-        let iss = self.tel.make_issuance_event(message)?;
+        let iss = self.tel.make_issuance_event(SelfAddressing::Blake3_256, message)?;
 
         self.update(iss)?;
 

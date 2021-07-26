@@ -1,6 +1,5 @@
 use keri::{
     derivation::self_addressing::SelfAddressing,
-    event::SerializationFormats,
     prefix::{IdentifierPrefix, SelfAddressingPrefix},
 };
 use teliox::{
@@ -14,23 +13,17 @@ use teliox::{
 use crate::error::Error;
 
 pub struct Tel {
-    pub database: EventDatabase,
-    serialization_format: SerializationFormats,
-    derivation: SelfAddressing,
     tel_prefix: IdentifierPrefix,
+    pub database: EventDatabase,
 }
 
 impl Tel {
     pub fn new(
         db: EventDatabase,
-        serialization_format: SerializationFormats,
-        derivation: SelfAddressing,
     ) -> Self {
         Self {
             database: db,
             tel_prefix: IdentifierPrefix::default(),
-            serialization_format,
-            derivation,
         }
     }
 
@@ -46,8 +39,8 @@ impl Tel {
             config,
             backer_threshold,
             backers,
-            &self.derivation,
-            &self.serialization_format,
+            None,
+            None,
         )
         .map_err(|e| Error::from(e))
     }
@@ -61,19 +54,19 @@ impl Tel {
             &self.get_management_tel_state()?,
             ba,
             br,
-            &self.derivation,
-            &self.serialization_format,
+            None,
+            None,
         )
         .map_err(|e| Error::from(e))
     }
 
-    pub fn make_issuance_event(&self, message: &str) -> Result<Event, Error> {
-        let message_hash = self.derivation.derive(message.as_bytes());
+    pub fn make_issuance_event(&self, derivation: SelfAddressing, message: &str) -> Result<Event, Error> {
+        let message_hash = derivation.derive(message.as_bytes());
         event_generator::make_issuance_event(
             &self.get_management_tel_state()?,
             message_hash,
-            &self.derivation,
-            &self.serialization_format,
+            None,
+            None,
         )
         .map_err(|e| Error::from(e))
     }
@@ -81,15 +74,15 @@ impl Tel {
     pub fn make_revoke_event(&self, message_hash: &SelfAddressingPrefix) -> Result<Event, Error> {
         let vc_state = self.get_vc_state(message_hash)?;
         let last = match vc_state {
-            TelState::Issued(last) => self.derivation.derive(&last),
+            TelState::Issued(last) => last,
             _ => return Err(Error::Generic("Inproper vc state".into())),
         };
         event_generator::make_revoke_event(
             message_hash,
-            last,
+            &last,
             &self.get_management_tel_state()?,
-            &self.derivation,
-            &self.serialization_format,
+            None,
+            None,
         )
         .map_err(|e| Error::from(e))
     }
