@@ -1,3 +1,8 @@
+use std::{
+    fmt::{self, Debug},
+    path::Path,
+};
+
 // use event_generator::{Key, KeyType};
 use keri::{
     database::sled::SledEventDatabase,
@@ -8,7 +13,7 @@ use keri::{
         EventMessage,
     },
     event_message::parse::signed_message,
-    event_message::parse::{signed_event_stream, Deserialized},
+    event_message::parse::{message, signed_event_stream, Deserialized},
     event_message::SignedEventMessage,
     prefix::AttachedSignaturePrefix,
     prefix::{IdentifierPrefix, SelfAddressingPrefix},
@@ -26,21 +31,52 @@ pub struct KERL {
     database: SledEventDatabase,
 }
 
+impl Debug for KERL {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?}",
+            self.get_kerl()
+                .map_err(|_e| fmt::Error)?
+                .map(|k| String::from_utf8(k))
+                .unwrap()
+        )
+    }
+}
+
 impl<'d> KERL {
     // incept a state and keys
-    pub fn new(db: SledEventDatabase, prefix: IdentifierPrefix) -> Result<KERL, Error> {
+    pub fn new(db: SledEventDatabase) -> Result<KERL, Error> {
         Ok(KERL {
-            prefix,
+            prefix: IdentifierPrefix::default(),
             database: db,
         })
     }
 
-    fn process(
+    pub fn create_kel_db(path: &Path) -> Result<SledEventDatabase, Error> {
+        SledEventDatabase::new(path).map_err(|e| e.into())
+    }
+
+    pub fn process(&self, msg: &[u8], signature: &[u8]) -> Result<SignedEventMessage, Error> {
+        let processor = EventProcessor::new(&self.database);
+        let message = message(&msg).unwrap().1.event;
+        let sigged = message.sign(vec![AttachedSignaturePrefix::new(
+            SelfSigning::Ed25519Sha512,
+            signature.to_vec(),
+            0,
+        )]);
+        processor.process(signed_message(&sigged.serialize()?).unwrap().1)?;
+
+        Ok(sigged)
+    }
+
+    pub fn process_mutable(
         &mut self,
-        message: EventMessage,
+        msg: Vec<u8>,
         signature: Vec<u8>,
     ) -> Result<SignedEventMessage, Error> {
         let processor = EventProcessor::new(&self.database);
+        let message = message(&msg).unwrap().1.event;
         let sigged = message.sign(vec![AttachedSignaturePrefix::new(
             SelfSigning::Ed25519Sha512,
             signature,
@@ -138,6 +174,14 @@ impl<'d> KERL {
         processor.process(signed_message(&ixn.serialize()?).unwrap().1)?;
 
         Ok(ixn)
+    }
+
+    pub fn make_ixn_seal(&self, seal_list: &[Seal]) -> Result<EventMessage, Error> {
+        let state = self.get_state()?.unwrap();
+
+        let ev = event_generator::make_ixn_with_seal(seal_list, state).unwrap();
+
+        Ok(ev)
     }
 
     pub fn respond<K: KeyManager>(&self, msg: &[u8], key_manager: &K) -> Result<Vec<u8>, Error> {

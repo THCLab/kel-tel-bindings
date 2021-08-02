@@ -15,4 +15,7 @@ pub enum Error {
 
     #[error("{0}")]
     Generic(String),
+
+    #[error("Queue error")]
+    QueueError,
 }

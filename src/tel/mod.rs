@@ -1,11 +1,14 @@
+use std::{fmt::Debug, path::Path};
+
 use keri::{
     derivation::self_addressing::SelfAddressing,
-    prefix::{IdentifierPrefix, SelfAddressingPrefix},
+    prefix::{IdentifierPrefix, Prefix, SelfAddressingPrefix},
 };
 use teliox::{
     database::EventDatabase,
     event::{manager_event::Config, verifiable_event::VerifiableEvent, Event},
     processor::EventProcessor,
+    seal::EventSourceSeal,
     state::{vc_state::TelState, ManagerTelState, State},
     tel::event_generator,
 };
@@ -14,17 +17,25 @@ use crate::error::Error;
 
 pub struct Tel {
     tel_prefix: IdentifierPrefix,
-    pub database: EventDatabase,
+    database: EventDatabase,
+}
+
+impl Debug for Tel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TEL{{prefix: {}}}", self.tel_prefix.to_str())
+    }
 }
 
 impl Tel {
-    pub fn new(
-        db: EventDatabase,
-    ) -> Self {
+    pub fn new(db: EventDatabase) -> Self {
         Self {
             database: db,
             tel_prefix: IdentifierPrefix::default(),
         }
+    }
+
+    pub fn create_tel_db(path: &Path) -> Result<EventDatabase, Error> {
+        EventDatabase::new(path).map_err(|e| e.into())
     }
 
     pub fn make_inception_event(
@@ -50,17 +61,12 @@ impl Tel {
         ba: &[IdentifierPrefix],
         br: &[IdentifierPrefix],
     ) -> Result<Event, Error> {
-        event_generator::make_rotation_event(
-            &self.get_management_tel_state()?,
-            ba,
-            br,
-            None,
-            None,
-        )
-        .map_err(|e| Error::from(e))
+        event_generator::make_rotation_event(&self.get_management_tel_state()?, ba, br, None, None)
+            .map_err(|e| Error::from(e))
     }
 
-    pub fn make_issuance_event(&self, derivation: SelfAddressing, message: &str) -> Result<Event, Error> {
+    pub fn make_issuance_event(&self, message: &str) -> Result<Event, Error> {
+        let derivation = SelfAddressing::Blake3_256;
         let message_hash = derivation.derive(message.as_bytes());
         event_generator::make_issuance_event(
             &self.get_management_tel_state()?,
@@ -71,14 +77,15 @@ impl Tel {
         .map_err(|e| Error::from(e))
     }
 
-    pub fn make_revoke_event(&self, message_hash: &SelfAddressingPrefix) -> Result<Event, Error> {
-        let vc_state = self.get_vc_state(message_hash)?;
+    pub fn make_revoke_event(&self, message_hash: &str) -> Result<Event, Error> {
+        let message_hash = message_hash.parse::<SelfAddressingPrefix>()?;
+        let vc_state = self.get_vc_state(&message_hash)?;
         let last = match vc_state {
             TelState::Issued(last) => last,
             _ => return Err(Error::Generic("Inproper vc state".into())),
         };
         event_generator::make_revoke_event(
-            message_hash,
+            &message_hash,
             &last,
             &self.get_management_tel_state()?,
             None,
@@ -87,16 +94,25 @@ impl Tel {
         .map_err(|e| Error::from(e))
     }
 
-    // Process verifiable event. It doesn't check if source seal is correct. Just add event to tel.
-    pub fn process(&mut self, event: VerifiableEvent) -> Result<State, Error> {
+    // Process tel initiation event. Mutate the tel, because of setting prefix.
+    pub fn incept_tel(&mut self, event: Event, seal: EventSourceSeal) -> Result<State, Error> {
         let processor = EventProcessor::new(&self.database);
-        let state = processor.process(event)?;
+        let ve = VerifiableEvent::new(event, seal.into());
+        let state = processor.process(ve)?;
         // If tel prefix is not set yet, set it to first processed management event identifier prefix.
         if self.tel_prefix == IdentifierPrefix::default() {
             if let State::Management(ref man) = state {
                 self.tel_prefix = man.prefix.to_owned()
             }
         }
+        Ok(state)
+    }
+
+    // Process verifiable event (without mut). It doesn't check if source seal is correct. Just add event to tel.
+    pub fn process(&self, event: Event, seal: EventSourceSeal) -> Result<State, Error> {
+        let processor = EventProcessor::new(&self.database);
+        let ve = VerifiableEvent::new(event, seal.into());
+        let state = processor.process(ve)?;
         Ok(state)
     }
 
