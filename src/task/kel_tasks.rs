@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use keri::signer::KeyManager;
 
@@ -8,17 +8,20 @@ use super::{HandleResult, Task};
 
 #[derive(Debug)]
 pub struct GetKelTask<K: KeyManager + Send + Sync + 'static> {
-    controller: Arc<Controller<K>>,
+    controller: Arc<RwLock<Controller<K>>>,
 }
 
 impl<K: KeyManager + Send + Sync + 'static> Task for GetKelTask<K> {
     fn handle(&self) -> Result<HandleResult, Error> {
-        let kel = self.controller.get_kerl()?.unwrap();
-        Ok(HandleResult::GotKel(kel))
+        Ok(match self.controller.read().unwrap().get_kerl() {
+            Ok(kel) => HandleResult::GotKel(kel.unwrap()),
+            Err(e) => HandleResult::Failure(e.to_string()),
+        })
     }
 }
+
 impl<K: KeyManager + Send + Sync + 'static> GetKelTask<K> {
-    pub fn new(controller: Arc<Controller<K>>) -> Self {
+    pub fn new(controller: Arc<RwLock<Controller<K>>>) -> Self {
         Self { controller }
     }
 }

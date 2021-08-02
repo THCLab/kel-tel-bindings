@@ -1,9 +1,4 @@
-use std::{
-    fmt::{Debug, Display},
-    path::Path,
-    str::FromStr,
-    sync::Arc,
-};
+use std::{fmt::{Debug, Display}, path::Path, str::FromStr, sync::{Arc, RwLock}, thread::sleep, time::Duration};
 
 use crate::{
     error::Error,
@@ -17,7 +12,7 @@ use crate::{
     task_manager::TaskManager,
 };
 use crate::{kerl::KERL, tel::Tel};
-use crossbeam_channel::Sender;
+use crossbeam_channel::{unbounded, Sender};
 use keri::{
     derivation::self_addressing::SelfAddressing,
     event::{
@@ -25,7 +20,7 @@ use keri::{
         EventMessage,
     },
     prefix::{Prefix, SelfAddressingPrefix},
-    signer::KeyManager,
+    signer::{CryptoBox, KeyManager},
 };
 use teliox::{event::Event, seal::EventSourceSeal};
 
@@ -159,14 +154,14 @@ fn to_source_seal(event_message: &EventMessage) -> Result<EventSourceSeal, Error
 }
 
 pub struct Manager<K: KeyManager + Send + Sync + 'static> {
-    controller: Arc<Controller<K>>,
+    controller: Arc<RwLock<Controller<K>>>,
     task_manager: Arc<TaskManager>,
 }
 
 impl<K: KeyManager + Send + Sync> Manager<K> {
     pub fn init(km: K) -> Result<Self, Error> {
         Ok(Manager {
-            controller: Arc::new(Controller::init(km)?),
+            controller: Arc::new(RwLock::new(Controller::init(km)?)),
             // TODO remove magic number
             task_manager: Arc::new(TaskManager::new(5)),
         })

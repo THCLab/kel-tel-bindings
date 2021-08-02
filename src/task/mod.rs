@@ -31,7 +31,7 @@ impl AddressedTask {
     }
 
     pub fn handle_and_send(&self) {
-        self.sender.send(self.task.handle().unwrap()).unwrap();
+        self.sender.send(self.task.handle().unwrap_or_else(|e| HandleResult::Failure(e.to_string()))).unwrap();
     }
 }
 
@@ -42,4 +42,5 @@ pub enum HandleResult {
     Issued(Vec<u8>),
     Revoked,
     MessageSigned(Vec<u8>),
+    Failure(String)
 }
