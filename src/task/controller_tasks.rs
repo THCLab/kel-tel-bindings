@@ -1,4 +1,7 @@
-use std::{fmt::Debug, sync::{Arc, RwLock}};
+use std::{
+    fmt::Debug,
+    sync::{Arc, RwLock},
+};
 
 use crate::error::Error;
 use keri::signer::KeyManager;
@@ -19,12 +22,10 @@ impl<K: KeyManager + Send + Sync + 'static> Task for IssueTask<K> {
     fn handle(&self) -> Result<HandleResult, Error> {
         let op_type = UpdateType::Issue(self.message.clone());
         let signature = {
-        let cont = self.controller.write().unwrap();
+            let cont = self.controller.write().unwrap();
             cont.update(op_type)?;
 
-            cont
-                .sign(&self.message.as_bytes().to_vec())
-                .unwrap()
+            cont.sign(&self.message.as_bytes().to_vec()).unwrap()
         };
         Ok(HandleResult::Issued(signature))
     }

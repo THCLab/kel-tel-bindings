@@ -14,10 +14,17 @@ pub struct GetTelTask<K: KeyManager + Send + Sync + 'static> {
 
 impl<K: KeyManager + Send + Sync + 'static> Task for GetTelTask<K> {
     fn handle(&self) -> Result<HandleResult, Error> {
-        Ok(match self.controller.read().unwrap().get_tel(self.message_hash.clone()) {
-            Ok(tel) => HandleResult::GotTel(tel),
-            Err(e) => HandleResult::Failure(e.to_string()),
-        })
+        Ok(
+            match self
+                .controller
+                .read()
+                .unwrap()
+                .get_tel(self.message_hash.clone())
+            {
+                Ok(tel) => HandleResult::GotTel(tel),
+                Err(e) => HandleResult::Failure(e.to_string()),
+            },
+        )
     }
 }
 impl<K: KeyManager + Send + Sync + 'static> GetTelTask<K> {

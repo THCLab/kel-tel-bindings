@@ -46,14 +46,15 @@ impl Debug for KERL {
 
 impl<'d> KERL {
     // incept a state and keys
-    pub fn new(db: SledEventDatabase) -> Result<KERL, Error> {
+    pub fn new(path: &Path) -> Result<KERL, Error> {
+        let db = KERL::create_kel_db(path)?;
         Ok(KERL {
             prefix: IdentifierPrefix::default(),
             database: db,
         })
     }
 
-    pub fn create_kel_db(path: &Path) -> Result<SledEventDatabase, Error> {
+    fn create_kel_db(path: &Path) -> Result<SledEventDatabase, Error> {
         SledEventDatabase::new(path).map_err(|e| e.into())
     }
 

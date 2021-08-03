@@ -27,14 +27,14 @@ impl Debug for Tel {
 }
 
 impl Tel {
-    pub fn new(db: EventDatabase) -> Self {
-        Self {
-            database: db,
+    pub fn new(db_path: &Path) -> Result<Self, Error> {
+        Ok(Self {
+            database: Tel::create_tel_db(db_path)?,
             tel_prefix: IdentifierPrefix::default(),
-        }
+        })
     }
 
-    pub fn create_tel_db(path: &Path) -> Result<EventDatabase, Error> {
+    fn create_tel_db(path: &Path) -> Result<EventDatabase, Error> {
         EventDatabase::new(path).map_err(|e| e.into())
     }
 

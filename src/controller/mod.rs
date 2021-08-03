@@ -1,4 +1,9 @@
-use std::{fmt::{Debug, Display}, path::Path, str::FromStr, sync::{Arc, RwLock}, thread::sleep, time::Duration};
+use std::{
+    fmt::{Debug, Display},
+    path::Path,
+    str::FromStr,
+    sync::{Arc, RwLock},
+};
 
 use crate::{
     error::Error,
@@ -12,7 +17,7 @@ use crate::{
     task_manager::TaskManager,
 };
 use crate::{kerl::KERL, tel::Tel};
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::Sender;
 use keri::{
     derivation::self_addressing::SelfAddressing,
     event::{
@@ -20,7 +25,7 @@ use keri::{
         EventMessage,
     },
     prefix::{Prefix, SelfAddressingPrefix},
-    signer::{CryptoBox, KeyManager},
+    signer::KeyManager,
 };
 use teliox::{event::Event, seal::EventSourceSeal};
 
@@ -73,9 +78,11 @@ pub struct Controller<K: KeyManager + Send + Sync + 'static> {
 }
 
 impl<K: KeyManager + Send + Sync> Controller<K> {
-    pub fn init(km: K) -> Result<Self, Error> {
-        let mut tel = Tel::new(Tel::create_tel_db(Path::new("./tel"))?);
-        let mut kerl = KERL::new(KERL::create_kel_db(Path::new("./kel"))?).unwrap();
+    pub fn init(km: K, db_dir_path: &Path) -> Result<Self, Error> {
+        let tel_db_path = db_dir_path.join(Path::new("./kel"));
+        let kel_db_path = db_dir_path.join(Path::new("./tel"));
+        let mut tel = Tel::new(tel_db_path.as_path())?;
+        let mut kerl = KERL::new(kel_db_path.as_path())?;
         kerl.incept(&km)?;
 
         let vcp = tel.make_inception_event(kerl.get_prefix(), vec![], 0, vec![])?;
@@ -153,15 +160,15 @@ fn to_source_seal(event_message: &EventMessage) -> Result<EventSourceSeal, Error
     })
 }
 
-pub struct Manager<K: KeyManager + Send + Sync + 'static> {
+pub struct Dispatcher<K: KeyManager + Send + Sync + 'static> {
     controller: Arc<RwLock<Controller<K>>>,
     task_manager: Arc<TaskManager>,
 }
 
-impl<K: KeyManager + Send + Sync> Manager<K> {
-    pub fn init(km: K) -> Result<Self, Error> {
-        Ok(Manager {
-            controller: Arc::new(RwLock::new(Controller::init(km)?)),
+impl<K: KeyManager + Send + Sync> Dispatcher<K> {
+    pub fn init(km: K, db_dir_path: &Path) -> Result<Self, Error> {
+        Ok(Dispatcher {
+            controller: Arc::new(RwLock::new(Controller::init(km, db_dir_path)?)),
             // TODO remove magic number
             task_manager: Arc::new(TaskManager::new(5)),
         })
@@ -202,8 +209,11 @@ impl<K: KeyManager + Send + Sync> Manager<K> {
 pub fn test_responses() -> Result<(), Error> {
     use crossbeam_channel::bounded;
     use keri::signer::CryptoBox;
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
     let km = CryptoBox::new().unwrap();
-    let controller = Arc::new(Manager::init(km)?);
+    let controller = Arc::new(Dispatcher::init(km, dir.path())?);
 
     let c = Arc::clone(&controller);
     c.listen()?;

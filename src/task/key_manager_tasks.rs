@@ -1,4 +1,7 @@
-use std::{fmt::Debug, sync::{Arc, RwLock}};
+use std::{
+    fmt::Debug,
+    sync::{Arc, RwLock},
+};
 
 use crate::{controller::Controller, error::Error};
 use keri::signer::KeyManager;
@@ -13,7 +16,11 @@ pub struct SignMessageTask<K: KeyManager + Send + Sync + 'static> {
 
 impl<K: KeyManager + Send + Sync + 'static> Task for SignMessageTask<K> {
     fn handle(&self) -> Result<HandleResult, Error> {
-        let signature = self.controller.read().unwrap().sign(&self.message.clone())?;
+        let signature = self
+            .controller
+            .read()
+            .unwrap()
+            .sign(&self.message.clone())?;
         Ok(HandleResult::MessageSigned(signature))
     }
 }
