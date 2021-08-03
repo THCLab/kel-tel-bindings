@@ -1,13 +1,50 @@
-use std::{error::Error, sync::Arc};
+use std::sync::Arc;
 
 use crossbeam_channel::unbounded;
-use keri::signer::CryptoBox;
-use solid_adventure::{controller::Dispatcher, task::HandleResult};
+use keri::{event::event_data::EventData, event_message::parse::Deserialized, signer::CryptoBox};
+use solid_adventure::{controller::Dispatcher, error::Error, task::HandleResult};
 use tempfile::tempdir;
 
 #[test]
-pub fn test_multithread_response() -> Result<(), Box<dyn Error>> {
-    let dir = tempdir()?;
+pub fn test_issuing() -> Result<(), Error> {
+    let dir = tempdir().unwrap();
+    let km = CryptoBox::new()?;
+
+    let controller = Dispatcher::init(km, dir.path())?;
+    controller.listen().unwrap();
+
+    let (issuing_sender, issuing_receiver) = unbounded();
+
+    let msg = "hi".to_string();
+    controller.issue(msg, issuing_sender.clone())?;
+    let _recv = issuing_receiver.recv().unwrap();
+
+    controller.get_kel(issuing_sender.clone())?;
+    match issuing_receiver.recv().unwrap() {
+        HandleResult::GotKel(kel) => {
+            let parsed_kel = keri::event_message::parse::signed_event_stream(&kel)
+                .unwrap()
+                .1;
+            let mut ilks = parsed_kel.into_iter().map(|ev| match ev {
+                Deserialized::Event(e) => e.event.event.event.event_data,
+                Deserialized::NontransferableRct(_) => todo!(),
+                Deserialized::TransferableRct(_) => todo!(),
+            });
+            assert!(matches!(ilks.next(), Some(EventData::Icp(_))));
+            assert!(matches!(ilks.next(), Some(EventData::Ixn(_))));
+            assert!(matches!(ilks.next(), Some(EventData::Ixn(_))));
+            assert!(matches!(ilks.next(), None));
+            Ok(())
+        }
+        _ => Err(Error::Generic("Wrong result type.".into())),
+    }?;
+
+    Ok(())
+}
+
+#[test]
+pub fn test_multithread_response() -> Result<(), Error> {
+    let dir = tempdir().unwrap();
     let km = CryptoBox::new()?;
 
     let controller = Arc::new(Dispatcher::init(km, dir.path())?);
